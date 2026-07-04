@@ -1,0 +1,4 @@
+interface:
+  display_name: "TouchSocket"
+  short_description: "TouchSocket 程序集与编码参考指南"
+  default_prompt: "Use $touchsocket to implement or review TouchSocket networking, RPC, protocol, or industrial communication code."
