@@ -16,6 +16,45 @@ Key concepts:
 
 When adding a new RPC family, keep shared call semantics in `TouchSocket.Rpc`; keep protocol parsing and attributes in the protocol assembly.
 
+## RPC with Microsoft DI / ASP.NET Core container
+
+- The RPC container defaults to TouchSocket's own `Container`, separate from the host `IServiceCollection`. `TouchSocketConfig.ConfigureContainer(...)` receives an `IRegistrator`, not an `IServiceCollection`.
+- Constructor parameters the container cannot resolve come back as `null` and fail later at call time, so register every dependency explicitly.
+- Once `SetResolver(...)` is set, the `ConfigureContainer(...)` branch on the config is skipped: `AddRpcStore(...)` and the default `ILog` registration in that branch no longer run. Put `AddRpcStore(...)` and `AddConsoleLogger()` in `Services.ConfigureContainer(...)` instead, and do not duplicate them on the config.
+- Order: build the host first, pass the built provider via `SetResolver(...)`, then call `SetupAsync(...)` and `StartAsync(...)`.
+- Reference the `TouchSocket.Core.DependencyInjection` bridge package on the host project that calls these extensions, aligned with the other TouchSocket packages.
+
+```csharp
+// Before Build: RPC registration into the same IServiceCollection.
+builder.Services.ConfigureContainer(a =>
+{
+    a.AddConsoleLogger();
+    a.AddRpcStore(store =>
+    {
+        store.RegisterServer<IMyApi, MyApi>();
+    });
+});
+
+var app = builder.Build();
+
+// After Build: hand the host provider to TouchSocket.
+var service = new TcpDmtpService();
+var config = new TouchSocketConfig()
+    .SetListenIPHosts(7789)
+    .SetResolver(app.Services)
+    .ConfigurePlugins(p => p.UseDmtpRpc())
+    .SetDmtpOption(o => o.VerifyToken = "Rpc");
+
+await service.SetupAsync(config);
+await service.StartAsync();
+```
+
+- Through the bridge, `RegisterServer(...)` becomes an ordinary MS DI registration resolved via the call resolver.
+- Alternatives: a custom `IRegistrator`/`IResolver` bridge; `RegisterServer<T>(instance)` for a pre-built singleton instance; a parameterless constructor plus service locator.
+- Lifetimes: `RegisterServer(...)` is singleton by default; mark the contract with `ITransientRpcServer` for per-call or `IScopedRpcServer` for scoped. The instance overload is always a fixed instance. A singleton API that needs scoped services injects `IServiceScopeFactory` and opens a scope per call; there is no automatic per-call scope on the RPC side.
+- Checklist: `AddRpcStore(...)` registered once via services; every constructor parameter resolvable; setup/start after build with `StartAsync(...)` called; one real call returns a business value and repeated calls confirm the expected lifetime; stop/dispose cleanly. Diagnose with `GetServerRpcMethods(...)` and resolver logging.
+- Common mapping: timeout with no server exception means methods were never registered; a null-reference at call time means an unresolved dependency; `ILog` unresolved means the logger was not moved to the services branch; scoped-service faults inside a singleton API mean a captive dependency.
+
 ## `TouchSocket.Rpc.RateLimiting`
 
 Use for rate limiting across RPC families. It depends only on `TouchSocket.Rpc` plus `System.Threading.RateLimiting`.
